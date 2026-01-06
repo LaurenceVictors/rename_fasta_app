@@ -1,0 +1,15 @@
+# Ignore the virtual environment folder
+venv/
+env/
+rename_env/
+
+# Ignore Mac system files
+.DS_Store
+
+# Ignore compiled Python files
+__pycache__/
+*.pyc
+
+# Ignore data files (optional, but good practice not to upload heavy data)
+*.fasta
+*.fa
