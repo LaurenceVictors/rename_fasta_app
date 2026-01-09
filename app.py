@@ -15,6 +15,10 @@ import sys
 from Bio import SeqIO
 import re
 
+# --- INJECTED DATA ---
+lookup_map = {lookup_map_repr}
+# ---------------------
+
 def modify_header(original_id, original_description):
     # --- START AGENT GENERATED LOGIC ---
     {logic_code}
@@ -22,11 +26,19 @@ def modify_header(original_id, original_description):
     return new_id, new_description
 
 def main():
-    # This block is for the standalone script execution
+    # Standalone execution logic
     input_file = "input.fasta" 
     output_file = "output.fasta"
-    # In real usage, sys.argv would handle this.
-    pass
+    
+    records = []
+    for record in SeqIO.parse(input_file, "fasta"):
+        nid, ndesc = modify_header(record.id, record.description)
+        record.id = nid
+        record.description = ndesc
+        record.name = ""
+        records.append(record)
+    
+    SeqIO.write(records, output_file, "fasta")
 
 if __name__ == "__main__":
     main()
@@ -37,89 +49,133 @@ if __name__ == "__main__":
 # ==========================================
 SYSTEM_PROMPT = """
 Role: You are an expert Python Developer and Bioinformatics Data Engineer.
-Objective: Generate a Python function body for 'modify_header' to rename FASTA sequences based on user requirements.
+Objective: Generate or Modify a Python function body for 'modify_header'.
 
 Context:
 You are provided a function signature: 
 def modify_header(original_id, original_description):
 
+Available Global Variables:
+- lookup_map (dict): A dictionary where keys are old IDs and values are new IDs.
+
 Input variables:
-- original_id (str): The ID from the FASTA line (after >).
+- original_id (str): The ID from the FASTA line.
 - original_description (str): The full description line.
 
 Your Task:
-1. Receive a natural language request (e.g., "Keep only the first part before the underscore").
-2. Return ONLY the valid Python code indented for the inside of that function.
-3. Assign values to variables 'new_id' and 'new_description' at the end.
-4. Do NOT return the function definition line, only the body.
-5. Do NOT use markdown formatting (```python). Just plain text code.
-
-Example Output:
-parts = original_id.split('_')
-if len(parts) > 1:
-    new_id = parts[0]
-else:
-    new_id = original_id
-new_description = new_id
+1. Receive a User Request and optionally 'Current Code'.
+2. If 'Current Code' is provided, modify it to satisfy the new request while keeping existing functionality working (unless asked to change it).
+3. If no 'Current Code', generate from scratch.
+4. Return ONLY the valid Python code indented for the inside of that function.
+5. Assign values to variables 'new_id' and 'new_description' at the end.
+6. CRITICAL: Do NOT use 'return' statements. Just assign variables.
+7. CRITICAL: Do NOT use markdown formatting. Just plain text code.
 """
 
 # ==========================================
 # 3. HELPER FUNCTIONS
 # ==========================================
 
-def get_llm_logic(user_request, api_key):
-    """Calls the LLM to get the transformation logic."""
+def get_llm_logic(user_request, api_key, current_code=None):
+    """Calls the LLM to get or refine the transformation logic."""
     if not api_key:
         st.error("Please provide an API Key.")
         return None
 
-    # UPDATED: Using the stable, free-tier friendly model
     llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=api_key, temperature=0)
     
+    # Construct the prompt dynamically
+    if current_code:
+        content = f"""
+        --- CURRENT CODE ---
+        {current_code}
+        --------------------
+        USER FEEDBACK / REFINEMENT REQUEST:
+        {user_request}
+        
+        Instruction: Update the Current Code to satisfy the User Feedback.
+        """
+    else:
+        content = f"User Request: {user_request}"
+
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=f"User Request: {user_request}")
+        HumanMessage(content=content)
     ]
     
     response = llm.invoke(messages)
     
-    # Clean up response (remove markdown if the LLM forgot instructions)
+    # Clean up response
     code = response.content.replace("```python", "").replace("```", "").strip()
     return code
 
-def test_logic_safely(logic_code, sample_records):
+def normalize_code_indentation(code_str):
     """
-    Executes the generated string code in a safe local scope 
-    against the sample data to create a preview DataFrame.
+    Robustly normalizes indentation for code blocks where the first line 
+    might have 0 indent but subsequent lines have 4, etc.
     """
+    lines = code_str.split('\n')
+    # Remove empty leading lines
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    # Remove empty trailing lines
+    while lines and not lines[-1].strip():
+        lines.pop()
+        
+    if not lines:
+        return ""
+
+    # Determine the baseline indentation from the first non-empty line
+    first_line_indent = len(lines[0]) - len(lines[0].lstrip())
+    
+    cleaned_lines = []
+    for line in lines:
+        # If line is empty, just add empty
+        if not line.strip():
+            cleaned_lines.append("")
+            continue
+            
+        # Remove the baseline indentation
+        if len(line) >= first_line_indent:
+            cleaned_lines.append(line[first_line_indent:])
+        else:
+            cleaned_lines.append(line.lstrip()) # Fallback
+            
+    return "\n".join(cleaned_lines)
+
+def test_logic_safely(logic_code, sample_records, lookup_map=None):
     preview_data = []
     error_msg = None
+    
+    if lookup_map is None:
+        lookup_map = {}
 
-    # UPDATED: Indent the user's code so it fits inside the function wrapper
-    indented_logic = textwrap.indent(logic_code, '    ')
+    # 1. Normalize the user's logic using our robust helper
+    clean_logic = normalize_code_indentation(logic_code)
+    
+    # 2. Indent everything by 4 spaces
+    indented_logic = textwrap.indent(clean_logic, '    ')
 
-    # Wrapper to execute the dynamic code
-    full_function_str = f"""
-def dynamic_modifier(original_id, original_description):
-    import re
-    # --- Injected Code starts below ---
-{indented_logic}
-    # --- Injected Code ends above ---
-    # UPDATED: Use locals().get() to safely retrieve variables even if user logic failed to define them
-    return locals().get('new_id', original_id), locals().get('new_description', original_description)
-"""
-    local_scope = {}
+    # 3. Manually construct the wrapper
+    full_function_str = (
+        "def dynamic_modifier(original_id, original_description):\n"
+        "    import re\n"
+        f"{indented_logic}\n"
+        "    return locals().get('new_id', original_id), locals().get('new_description', original_description)"
+    )
+    
+    execution_scope = {
+        'lookup_map': lookup_map,
+        're': pd.NA 
+    }
     
     try:
-        # Compile the function
-        exec(full_function_str, {}, local_scope)
-        modifier_func = local_scope['dynamic_modifier']
+        exec(full_function_str, execution_scope)
+        modifier_func = execution_scope['dynamic_modifier']
 
-        # Run on samples
         for record in sample_records:
             old_id = record.id
             old_desc = record.description
-            
             try:
                 new_id, new_desc = modifier_func(old_id, old_desc)
                 preview_data.append({
@@ -135,7 +191,7 @@ def dynamic_modifier(original_id, original_description):
                 })
 
     except Exception as e:
-        error_msg = f"Syntax Error in Generated Code: {e}\n\nCode attempting to run:\n{full_function_str}"
+        error_msg = f"Syntax Error: {e}\n\nGenerated Code Context:\n{full_function_str}"
 
     return pd.DataFrame(preview_data), error_msg
 
@@ -148,127 +204,148 @@ def main():
     
     st.title("🧬 Agentic FASTA Renamer")
     st.markdown("""
-    **Workflow:** Upload FASTA -> Describe renaming rules -> Agent writes code -> You review -> Download.
-    *Uses the 'Universal Logic Template' approach.*
+    **Workflow:** Upload FASTA -> Describe renaming rules -> Agent writes code -> **Refine if needed** -> Download.
     """)
 
     # --- Sidebar: Setup ---
     with st.sidebar:
         st.header("Configuration")
         api_key = st.text_input("Google API Key", type="password")
-        st.info("This app uses Gemini 2.0 Flash via LangChain.")
+        
+        # Reset Button to clear state
+        if st.button("Reset / Start Over"):
+            st.session_state.generated_code = None
+            st.rerun()
 
-    # --- Step 1: File Upload ---
-    uploaded_file = st.file_uploader("Upload FASTA File", type=["fasta", "fa"])
+    # --- Step 1: File Uploads ---
+    uploaded_file = st.file_uploader("1. Upload FASTA File", type=["fasta", "fa"])
     
+    # Optional CSV Map
+    csv_file = st.file_uploader("Optional: Upload CSV Map", type=["csv"])
+    lookup_map = {}
+    if csv_file:
+        try:
+            df = pd.read_csv(csv_file, header=None, dtype=str)
+            if df.shape[1] >= 2:
+                lookup_map = dict(zip(df.iloc[:, 0].str.strip(), df.iloc[:, 1].str.strip()))
+                st.success(f"Loaded Mapping with {len(lookup_map)} entries.")
+        except Exception as e:
+            st.error(f"Error reading CSV: {e}")
+
     if uploaded_file:
-        # Load data into memory (using Biopython)
         stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
         records = list(SeqIO.parse(stringio, "fasta"))
         
-        st.success(f"Loaded {len(records)} sequences from '{uploaded_file.name}'.")
-        
-        # Show raw sample
-        with st.expander("View Raw File Sample"):
-            st.code(uploaded_file.getvalue().decode("utf-8")[:500] + "...")
-
-        # --- Step 2: User Intent ---
-        st.subheader("1. Describe Renaming Logic")
-        user_request = st.text_area(
-            "How should we rename these headers?", 
-            placeholder="Example: Remove everything after the first pipe '|' symbol, or add 'human_' to the start.",
-            height=100
-        )
-
-        generate_btn = st.button("Generate Logic & Preview")
-
-        # Session State management
+        # Initialize Session State
         if "generated_code" not in st.session_state:
             st.session_state.generated_code = None
 
-        if generate_btn and user_request:
-            with st.spinner("Agent is writing Python code..."):
-                generated_code = get_llm_logic(user_request, api_key)
-                st.session_state.generated_code = generated_code
+        # --- Step 2: Logic Generation (The Loop) ---
+        st.subheader("2. Renaming Logic")
 
-        # --- Step 3: Human-in-the-Loop Review ---
-        if st.session_state.generated_code:
-            st.subheader("2. Review & Verify")
-            
-            col1, col2 = st.columns(2)
+        # CASE A: No code generated yet (First Run)
+        if st.session_state.generated_code is None:
+            user_request = st.text_area(
+                "Describe renaming rules:", 
+                placeholder="Example: Use the CSV map. If not found, keep original ID.",
+                height=100
+            )
+            if st.button("Generate Initial Logic") and user_request:
+                with st.spinner("Agent is writing Python code..."):
+                    # Add context about map if it exists
+                    req_context = user_request
+                    if lookup_map:
+                        req_context += f"\n(Context: lookup_map available with {len(lookup_map)} entries)"
+                    
+                    code = get_llm_logic(req_context, api_key)
+                    st.session_state.generated_code = code
+                    st.rerun()
+
+        # CASE B: Code exists (Refinement Phase)
+        else:
+            col1, col2 = st.columns([1, 1])
             
             with col1:
-                st.markdown("### Generated Python Logic")
+                st.markdown("### Current Logic")
                 st.code(st.session_state.generated_code, language="python")
-                st.caption("This logic will be injected into the template.")
+                
+                # --- THE REFINEMENT INPUT ---
+                st.markdown("#### 🛠️ Refine Logic")
+                refine_request = st.text_area(
+                    "Not perfect? Tell the agent what to fix:",
+                    placeholder="Example: 'Actually, make the ID uppercase' or 'Fix the error on line 3'"
+                )
+                
+                if st.button("Update Logic"):
+                    with st.spinner("Agent is updating code..."):
+                        new_code = get_llm_logic(refine_request, api_key, current_code=st.session_state.generated_code)
+                        st.session_state.generated_code = new_code
+                        st.rerun()
 
             with col2:
-                st.markdown("### Preview (First 5 Sequences)")
+                st.markdown("### Preview")
                 # Run the dry run
-                preview_df, error = test_logic_safely(st.session_state.generated_code, records[:5])
+                preview_df, error = test_logic_safely(st.session_state.generated_code, records[:5], lookup_map)
                 
                 if error:
                     st.error(error)
                 else:
                     st.dataframe(preview_df, use_container_width=True)
-                    
-                    # Validation Check
                     if "ERROR" in preview_df['New ID'].values:
-                        st.warning("⚠️ The logic produced errors on some lines. Please refine your request.")
-                    elif preview_df['New ID'].duplicated().any():
-                        st.error("⚠️ Stop! This logic creates duplicate IDs. This is dangerous.")
+                        st.warning("⚠️ Logic produced errors.")
                     else:
-                        st.success("✅ Logic looks valid and unique.")
+                        st.success("✅ Logic valid.")
 
-            # --- Step 4: Execution ---
-            st.subheader("3. Execute & Download")
+            # --- Step 3: Execution ---
+            st.divider()
+            st.subheader("3. Download Results")
             
-            # UPDATED: Generate dynamic output filename
             original_name = uploaded_file.name
-            # If name is 'GLP2.fa', this makes it 'renamed_GLP2.fa'
             new_filename = f"renamed_{original_name}" 
             
-            # Construct the full downloadable script
-            full_script = BASE_TEMPLATE.format(logic_code=st.session_state.generated_code)
+            # Construct script for download
+            full_script = BASE_TEMPLATE.format(
+                logic_code=st.session_state.generated_code,
+                lookup_map_repr=repr(lookup_map)
+            )
             
-            # Apply logic to ALL records for the output file
             if st.button("Apply to All & Download"):
-                # Run transformation on all records
                 output_buffer = io.StringIO()
                 new_records = []
                 
-                # UPDATED: Re-compile logic with correct indentation
-                indented_logic = textwrap.indent(st.session_state.generated_code, '    ')
+                # Robust Construction (from previous step)
+                clean_logic = normalize_code_indentation(st.session_state.generated_code)
+                indented_logic = textwrap.indent(clean_logic, '    ')
                 
-                local_scope = {}
-                full_function_str = f"""
-def dynamic_modifier(original_id, original_description):
-    import re
-{indented_logic}
-    return locals().get('new_id', original_id), locals().get('new_description', original_description)
-"""
-                exec(full_function_str, {}, local_scope)
-                modifier_func = local_scope['dynamic_modifier']
+                full_function_str = (
+                    "def dynamic_modifier(original_id, original_description):\n"
+                    "    import re\n"
+                    f"{indented_logic}\n"
+                    "    return locals().get('new_id', original_id), locals().get('new_description', original_description)"
+                )
+                
+                execution_scope = {'lookup_map': lookup_map}
+                exec(full_function_str, execution_scope)
+                modifier_func = execution_scope['dynamic_modifier']
                 
                 for r in records:
                     try:
                         nid, ndesc = modifier_func(r.id, r.description)
                         r.id = nid
                         r.description = ndesc
-                        r.name = "" # Biopython cleanup
+                        r.name = "" 
                         new_records.append(r)
                     except:
-                        pass # specific error handling if needed
+                        pass 
 
                 SeqIO.write(new_records, output_buffer, "fasta")
                 
-                # Download Buttons
                 d_col1, d_col2 = st.columns(2)
                 with d_col1:
                     st.download_button(
                         label=f"Download {new_filename}",
                         data=output_buffer.getvalue(),
-                        file_name=new_filename, # <--- UPDATED HERE
+                        file_name=new_filename,
                         mime="text/plain"
                     )
                 with d_col2:
