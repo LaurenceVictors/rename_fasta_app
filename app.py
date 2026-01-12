@@ -64,12 +64,14 @@ Input variables:
 
 Your Task:
 1. Receive a User Request and optionally 'Current Code'.
-2. If 'Current Code' is provided, modify it to satisfy the new request while keeping existing functionality working (unless asked to change it).
-3. If no 'Current Code', generate from scratch.
-4. Return ONLY the valid Python code indented for the inside of that function.
-5. Assign values to variables 'new_id' and 'new_description' at the end.
-6. CRITICAL: Do NOT use 'return' statements. Just assign variables.
-7. CRITICAL: Do NOT use markdown formatting. Just plain text code.
+2. Return ONLY the valid Python code indented for the inside of that function.
+3. Assign values to variables 'new_id' and 'new_description' at the end.
+
+CRITICAL SYNTAX RULES:
+- Start ALL lines at the beginning of the line (NO indentation for top-level logic).
+- Do NOT use the 'global' keyword (variables are already in scope).
+- Do NOT use 'return' statements. Just assign 'new_id' and 'new_description'.
+- Do NOT use markdown formatting. Just plain text code.
 """
 
 # ==========================================
@@ -111,35 +113,34 @@ def get_llm_logic(user_request, api_key, current_code=None):
 
 def normalize_code_indentation(code_str):
     """
-    Robustly normalizes indentation for code blocks where the first line 
-    might have 0 indent but subsequent lines have 4, etc.
+    Robustly normalizes indentation and removes 'global' statements 
+    that confuse the execution scope.
     """
     lines = code_str.split('\n')
-    # Remove empty leading lines
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    # Remove empty trailing lines
-    while lines and not lines[-1].strip():
-        lines.pop()
+    cleaned_lines = []
+    
+    # 1. Filter out empty lines and 'global' statements
+    valid_lines = []
+    for line in lines:
+        if not line.strip():
+            continue
+        if line.strip().startswith("global "):
+            continue # Skip global declarations, they aren't needed and mess up indent
+        valid_lines.append(line)
         
-    if not lines:
+    if not valid_lines:
         return ""
 
-    # Determine the baseline indentation from the first non-empty line
-    first_line_indent = len(lines[0]) - len(lines[0].lstrip())
+    # 2. Determine baseline indentation from the first valid line
+    first_line = valid_lines[0]
+    baseline_indent = len(first_line) - len(first_line.lstrip())
     
-    cleaned_lines = []
-    for line in lines:
-        # If line is empty, just add empty
-        if not line.strip():
-            cleaned_lines.append("")
-            continue
-            
-        # Remove the baseline indentation
-        if len(line) >= first_line_indent:
-            cleaned_lines.append(line[first_line_indent:])
+    # 3. Reconstruct code with baseline removed
+    for line in valid_lines:
+        if len(line) >= baseline_indent:
+            cleaned_lines.append(line[baseline_indent:])
         else:
-            cleaned_lines.append(line.lstrip()) # Fallback
+            cleaned_lines.append(line.lstrip()) # Fallback for weirdly formatted lines
             
     return "\n".join(cleaned_lines)
 
